@@ -164,12 +164,9 @@ def generate_mom(meeting_text: str) -> str:
 
 # ---------- 2. TEXT PARSING ----------
 def extract_relevant_points(mom_text: str) -> list[tuple[str, str]]:
-    """
-    Return list of (description, assignee_name) tuples from the generated MoM.
-    """
     pattern = re.compile(
-        r"\d+\.\s+\*\*Issue:\*\*\s+(.*?)\s*\n\s*-\s+\*\*Assigned to:\*\*\s+(\w+)",
-        re.MULTILINE,
+        r"\d+\.\s+(.*?)\s+-\s+Assigned to (\w+)",
+        re.IGNORECASE
     )
     return pattern.findall(mom_text)
 
