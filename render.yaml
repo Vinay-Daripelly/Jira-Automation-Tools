@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: jira-mom-webapp
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app4.py
+    envVars:
+      - key: MOONSHOT_API_KEY
+        value: sk-Lers3Q9cEM5RdbTSovjEMUe1K3qM4TOYORzFozm4ElazhKZN

@@ -1,0 +1,23 @@
+# Meeting Transcription
+
+  Meeting started: 6/23/2025, 2:42:28 PM
+  Duration: 2 minutes
+  Participants: PAVAN PRANEETH VARIGALA
+
+  [View original transcript](https://app.tactiq.io/api/2/u/m/r/4QD97CtYUfrfhuR0TaLm?o=txt)
+
+
+
+
+
+
+    ## Highlights
+
+    > 01:30 PAVAN PRANEETH VARIGALA: How do you work? first each issue for today is The login form is not working, right? the second issue comes To be the. Authentication Issues. For the client. The third issue is. I am unable to enable the audio. Permissions and My Chrome Extension.
+
+  ## Transcript
+
+  00:00 PAVAN PRANEETH VARIGALA: Hello, are you able to listen to?
+00:33 PAVAN PRANEETH VARIGALA: Hello.
+01:03 PAVAN PRANEETH VARIGALA: Is this a good time to speak? Are you noting down the time?
+01:30 PAVAN PRANEETH VARIGALA: How do you work? first each issue for today is The login form is not working Sri needs tot do it, right? the second issue comes To be the. Authentication Issues Sri should do it. For the client. The third issue is. I am unable to enable the audio. Permissions and My Chrome Extension Sri look into it.Also check for theapi calls sri.
