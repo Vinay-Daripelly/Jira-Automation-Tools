@@ -173,7 +173,7 @@ def extract_relevant_points(mom_text: str) -> list[tuple[str, str]]:
     )
     return pattern.findall(mom_text)
 
-d# ---------- 3. JIRA HELPERS ----------
+# ---------- 3. JIRA HELPERS ----------
 def get_project_key_by_name(cfg: dict, project_name: str) -> str:
     url = f"{cfg['jira_api_instance']}/rest/api/3/project/search"
     auth = HTTPBasicAuth(cfg["jira_email"], cfg["jira_api_token"])
