@@ -1,9 +1,9 @@
-from flask import Flask, request, render_template_string, jsonify
 import os
-import requests
 import re
+import json
+import requests
+from flask import Flask, request, render_template_string, jsonify
 from requests.auth import HTTPBasicAuth
-from openai import OpenAI
 
 app = Flask(__name__)
 UPLOAD_FOLDER = os.path.dirname(__file__)
@@ -124,128 +124,172 @@ HTML_FORM = '''
  # Keep the HTML_FORM content from your previous message here
 
 # === Helper Functions ===
-client = None
 
 def generate_mom(meeting_text: str) -> str:
-    try:
-        completion = client.chat.completions.create(
-            model="moonshot-v1-8k",
-            messages=[
-                {"role": "system", "content": "You will be given a meeting transcript under the '##transcript'. Extract all project-related action items and assign them to the respective persons."},
-                {"role": "user", "content": meeting_text}
-            ],
-            temperature=0.3,
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        raise Exception(f"Failed to generate MOM: {e}")
+    """
+    Call Moonshot's Chat Completion endpoint directly.
+    """
+    api_key = os.environ.get("MOONSHOT_API_KEY")
+    if not api_key:
+        raise RuntimeError("MOONSHOT_API_KEY environment variable is missing")
 
-def extract_relevant_points(mom_text: str) -> list:
-    pattern = re.compile(r"\d+\.\s+\*\*Issue:\*\*\s+(.*?)\s*\n\s*-\s+\*\*Assigned to:\*\*\s+(\w+)", re.MULTILINE)
+    payload = {
+        "model": "moonshot-v1-8k",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You will be given a meeting transcript. "
+                    "Extract all project-related action items and assign them to the respective persons."
+                ),
+            },
+            {"role": "user", "content": meeting_text},
+        ],
+        "temperature": 0.3,
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    resp = requests.post(
+        "https://api.moonshot.cn/v1/chat/completions",
+        headers=headers,
+        data=json.dumps(payload),
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+# ---------- 2. TEXT PARSING ----------
+def extract_relevant_points(mom_text: str) -> list[tuple[str, str]]:
+    """
+    Return list of (description, assignee_name) tuples from the generated MoM.
+    """
+    pattern = re.compile(
+        r"\d+\.\s+\*\*Issue:\*\*\s+(.*?)\s*\n\s*-\s+\*\*Assigned to:\*\*\s+(\w+)",
+        re.MULTILINE,
+    )
     return pattern.findall(mom_text)
 
-def get_project_key_by_name(config_data, project_name):
-    url = f"{config_data['jira_api_instance']}/rest/api/3/project/search"
-    headers = {"Accept": "application/json"}
-    auth = HTTPBasicAuth(config_data['jira_email'], config_data['jira_api_token'])
-    resp = requests.get(url, headers=headers, auth=auth)
+d# ---------- 3. JIRA HELPERS ----------
+def get_project_key_by_name(cfg: dict, project_name: str) -> str:
+    url = f"{cfg['jira_api_instance']}/rest/api/3/project/search"
+    auth = HTTPBasicAuth(cfg["jira_email"], cfg["jira_api_token"])
+    resp = requests.get(url, headers={"Accept": "application/json"}, auth=auth, timeout=30)
+    resp.raise_for_status()
     for proj in resp.json().get("values", []):
         if proj["name"].strip().lower() == project_name.strip().lower():
             return proj["key"]
-    raise Exception("Project not found.")
+    raise RuntimeError("Project not found in Jira")
 
-def get_account_id_by_name(config_data, assignee_name):
-    url = f"{config_data['jira_api_instance']}/rest/api/3/user/search?query={assignee_name}"
-    headers = {"Accept": "application/json"}
-    auth = HTTPBasicAuth(config_data['jira_email'], config_data['jira_api_token'])
-    resp = requests.get(url, headers=headers, auth=auth)
+def get_account_id_by_name(cfg: dict, assignee_name: str) -> str:
+    url = f"{cfg['jira_api_instance']}/rest/api/3/user/search?query={assignee_name}"
+    auth = HTTPBasicAuth(cfg["jira_email"], cfg["jira_api_token"])
+    resp = requests.get(url, headers={"Accept": "application/json"}, auth=auth, timeout=30)
+    resp.raise_for_status()
     users = resp.json()
     if not users:
-        raise Exception(f"No user: {assignee_name}")
+        raise RuntimeError(f"No Jira user matched: {assignee_name}")
     return users[0]["accountId"]
 
-def create_jira_issue(config_data, issue_data):
-    search_url = f"{config_data['jira_api_instance']}/rest/api/3/search"
+def create_jira_issue(cfg: dict, issue_data: dict) -> dict:
+    """
+    Create the Jira issue if it doesn't already exist (simple duplicate check by summary).
+    """
+    auth = HTTPBasicAuth(cfg["jira_email"], cfg["jira_api_token"])
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    auth = HTTPBasicAuth(config_data['jira_email'], config_data['jira_api_token'])
-    params = {"jql": f'project = "{issue_data["project_key"]}" AND summary ~ "{issue_data["summary"]}"'}
-    if requests.get(search_url, headers=headers, params=params, auth=auth).json().get("issues"):
-        return {"message": "Duplicate skipped", "summary": issue_data['summary']}
+
+    # duplicate check
+    jql = f'project = "{issue_data["project_key"]}" AND summary ~ "{issue_data["summary"]}"'
+    search_url = f"{cfg['jira_api_instance']}/rest/api/3/search"
+    if requests.get(search_url, headers=headers, params={"jql": jql}, auth=auth).json().get("issues"):
+        return {"skipped": "duplicate", "summary": issue_data["summary"]}
 
     payload = {
         "fields": {
-            "project": {"key": issue_data['project_key']},
-            "summary": issue_data['summary'],
+            "project": {"key": issue_data["project_key"]},
+            "summary": issue_data["summary"],
             "description": {
                 "version": 1,
                 "type": "doc",
-                "content": [{"type": "paragraph", "content": [{"text": issue_data['description'], "type": "text"}]}]
+                "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": issue_data["description"]}]}
+                ],
             },
             "issuetype": {"name": "Task"},
-            "assignee": {"accountId": issue_data['assignee_account_id']}
+            "assignee": {"accountId": issue_data["assignee_account_id"]},
         }
     }
 
-    create_url = f"{config_data['jira_api_instance']}/rest/api/3/issue"
-    resp = requests.post(create_url, headers=headers, json=payload, auth=auth)
-    return resp.json() if resp.status_code == 201 else {"error": resp.text}
+    create_url = f"{cfg['jira_api_instance']}/rest/api/3/issue"
+    resp = requests.post(create_url, headers=headers, json=payload, auth=auth, timeout=30)
+    if resp.status_code == 201:
+        return resp.json()
+    return {"error": resp.text, "summary": issue_data["summary"]}
 
-# === Routes ===
-@app.route('/')
+
+# ---------- 4. ROUTES ----------
+@app.route("/")
 def index():
     return render_template_string(HTML_FORM)
 
-@app.route('/process', methods=['POST'])
-def process():
-    global client
-    try:
-        file = request.files['meeting_file']
-        path = os.path.join(app.config['UPLOAD_FOLDER'], 'meeting.txt')
-        file.save(path)
 
-        config = {
-            "jira_email": request.form['jira_email'],
-            "jira_api_token": request.form['jira_api_token'],
-            "jira_api_instance": request.form['jira_api_instance'],
-            "project_name": request.form['project_name']
+@app.route("/process", methods=["POST"])
+def process():
+    """
+    Receive form data, generate MoM, create Jira issues.
+    """
+    try:
+        # 1. Save uploaded file
+        uploaded = request.files["meeting_file"]
+        path = os.path.join(app.config["UPLOAD_FOLDER"], "meeting.txt")
+        uploaded.save(path)
+
+        # 2. Basic config from form fields
+        cfg = {
+            "jira_email": request.form["jira_email"],
+            "jira_api_token": request.form["jira_api_token"],
+            "jira_api_instance": request.form["jira_api_instance"].rstrip("/"),
+            "project_name": request.form["project_name"],
         }
 
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, "r", encoding="utf-8") as f:
             meeting_text = f.read()
 
-        client = OpenAI(
-            api_key=os.environ["OPENAI_API_KEY"],
-            base_url="https://api.moonshot.cn/v1"
-        )
-
+        # 3. AI → MoM
         mom = generate_mom(meeting_text)
+
+        # 4. Parse items
         points = extract_relevant_points(mom)
-        project_key = get_project_key_by_name(config, config["project_name"])
+        project_key = get_project_key_by_name(cfg, cfg["project_name"])
 
         account_ids = {}
-        issues = []
+        created_issues = []
 
         for desc, assignee in points:
             try:
-                acc_id = get_account_id_by_name(config, assignee)
+                acc_id = get_account_id_by_name(cfg, assignee)
                 account_ids[assignee] = acc_id
                 issue_data = {
                     "project_key": project_key,
                     "summary": f"Action Item: {desc}",
                     "description": desc,
-                    "assignee_account_id": acc_id
+                    "assignee_account_id": acc_id,
                 }
-                issues.append(create_jira_issue(config, issue_data))
+                created_issues.append(create_jira_issue(cfg, issue_data))
             except Exception as e:
                 account_ids[assignee] = f"Error: {e}"
-                issues.append(f"Issue failed for {assignee}: {e}")
+                created_issues.append({"assignee": assignee, "error": str(e)})
 
-        return jsonify({"mom": mom, "account_ids": account_ids, "created_issues": issues})
+        return jsonify({"mom": mom, "account_ids": account_ids, "created_issues": created_issues})
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
-# === Run in Production ===
-if __name__ == '__main__':
+
+# ---------- 5. ENTRY POINT ----------
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
