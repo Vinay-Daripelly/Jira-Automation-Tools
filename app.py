@@ -102,7 +102,7 @@ HTML_FORM = '''
         const result = await response.json();
         if (response.ok) {
           output.innerHTML = `
-            <p class="success">✅ Jira issues created successfully.</p>
+            <p class="success">Jira issues created successfully.</p>
             <h3>Generated MoM:</h3>
             <pre>${result.mom}</pre>
             <h3>Assignees & Account IDs:</h3>
@@ -111,10 +111,10 @@ HTML_FORM = '''
             <pre>${JSON.stringify(result.created_issues, null, 2)}</pre>
           `;
         } else {
-          output.innerHTML = `<p class="error">❌ Error: ${result.error}</p>`;
+          output.innerHTML = `<p class="error"> Error: ${result.error}</p>`;
         }
       } catch (err) {
-        output.innerHTML = `<p class="error">❌ Request failed: ${err}</p>`;
+        output.innerHTML = `<p class="error"> Request failed: ${err}</p>`;
       }
     });
   </script>
@@ -127,23 +127,25 @@ HTML_FORM = '''
 
 def generate_mom(meeting_text: str) -> str:
     """
-    Call Moonshot's Chat Completion endpoint directly.
+    Uses Moonshot API to generate MoM in a fixed, regex-friendly format.
     """
     api_key = os.environ.get("MOONSHOT_API_KEY")
     if not api_key:
         raise RuntimeError("MOONSHOT_API_KEY environment variable is missing")
 
+    prompt = (
+        "From the meeting transcript below, extract clear action items.\n"
+        "Use this exact format:\n\n"
+        "1. **Issue:** [brief description]\n   - **Assigned to:** [name]\n\n"
+        "Transcript:\n"
+        f"{meeting_text}"
+    )
+
     payload = {
         "model": "moonshot-v1-8k",
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You will be given a meeting transcript. "
-                    "Extract all project-related action items and assign them to the respective persons."
-                ),
-            },
-            {"role": "user", "content": meeting_text},
+            {"role": "system", "content": "You are a meeting assistant that extracts tasks for Jira."},
+            {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
     }
@@ -153,20 +155,23 @@ def generate_mom(meeting_text: str) -> str:
         "Authorization": f"Bearer {api_key}",
     }
 
-    resp = requests.post(
+    response = requests.post(
         "https://api.moonshot.cn/v1/chat/completions",
         headers=headers,
         data=json.dumps(payload),
         timeout=60,
     )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
 
 # ---------- 2. TEXT PARSING ----------
 def extract_relevant_points(mom_text: str) -> list[tuple[str, str]]:
+    """
+    Extracts (issue description, assignee name) pairs using flexible pattern.
+    """
     pattern = re.compile(
-        r"\d+\.\s+(.*?)\s+-\s+Assigned to (\w+)",
-        re.IGNORECASE
+        r"\d+\.\s+\*\*Issue:\*\*\s+(.*?)\s*\n\s*-\s+\*\*Assigned to:\*\*\s+(\w+)",
+        re.IGNORECASE | re.MULTILINE,
     )
     return pattern.findall(mom_text)
 
